@@ -16,6 +16,7 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTOUIC ON)
 
 set(CMAKE_INCLUDE_CURRENT_DIR ON)
+set(CMAKE_BUILD_TYPE "RelWithDebInfo")
 
 add_executable(${PROJECT_NAME} ${srcs} ${module} ${ui})
 
