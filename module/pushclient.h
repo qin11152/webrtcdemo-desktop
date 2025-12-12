@@ -171,6 +171,9 @@ public:
         RTC_LOG(LS_INFO) << "ICE connection: " << new_state;
     }
 
+    void OnDataChannel(
+      webrtc::scoped_refptr<webrtc::DataChannelInterface> channel) override {}
+
 private:
     SimpleSignaling *signaling_;
 };

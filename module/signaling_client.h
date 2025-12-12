@@ -4,6 +4,8 @@
 #include <QWebSocket>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QJsonValue>
+#include <QJsonArray>
 #include <QUrl>
 #include <string>
 #include "pushclient.h"

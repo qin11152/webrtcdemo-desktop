@@ -99,9 +99,9 @@ void CapturerTrackSource::StartCaptureLoop(int target_fps, bool capture_cursor)
                                width, height);
 
             webrtc::VideoFrame vf = webrtc::VideoFrame::Builder()
-                                .set_video_frame_buffer(i420)
-                                .set_timestamp_us(webrtc::TimeMicros())
-                                .build();
+                                        .set_video_frame_buffer(i420)
+                                        .set_timestamp_us(webrtc::TimeMicros())
+                                        .build();
 
             // src_->OnFrame(vf);
             src_->OnCapturedFrame(vf);
@@ -205,11 +205,7 @@ void DesktopCapturerSource::CaptureLoop()
 WebRTCPushClient::WebRTCPushClient()
 {
     webrtc::InitializeSSL();
-    network_thread_ = std::make_unique<webrtc::Thread>(nullptr);
-    worker_thread_ = std::make_unique<webrtc::Thread>(nullptr);
-    signaling_thread_ = std::make_unique<webrtc::Thread>(nullptr);
-    network_thread_->Start();
-    worker_thread_->Start();
+    signaling_thread_ = webrtc::Thread::CreateWithSocketServer();
     signaling_thread_->Start();
 }
 
@@ -218,8 +214,7 @@ WebRTCPushClient::~WebRTCPushClient()
     pc_ = nullptr;
     factory_ = nullptr;
     signaling_thread_->Stop();
-    worker_thread_->Stop();
-    network_thread_->Stop();
+    signaling_thread_ = nullptr;
     webrtc::CleanupSSL();
 }
 
@@ -245,6 +240,23 @@ bool WebRTCPushClient::Init(const std::vector<IceServerConfig> &ice_servers)
     webrtc::EnableMedia(deps);
     factory_ =
         webrtc::CreateModularPeerConnectionFactory(std::move(deps));
+
+    webrtc::PeerConnectionInterface::RTCConfiguration config;
+    config.sdp_semantics = webrtc::SdpSemantics::kUnifiedPlan;
+    webrtc::PeerConnectionInterface::IceServer server;
+    server.uri = ice_servers[0].uri;
+    config.servers.push_back(server);
+
+    observer_ = std::make_unique<PeerObserver>(&signaling);
+
+    webrtc::PeerConnectionDependencies pc_dependencies(observer_.get());
+    auto error_or_peer_connection =
+        factory_->CreatePeerConnectionOrError(
+            config, std::move(pc_dependencies));
+    if (error_or_peer_connection.ok())
+    {
+        pc_ = std::move(error_or_peer_connection.value());
+    }
 
     return true;
 }
