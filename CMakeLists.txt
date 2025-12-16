@@ -16,7 +16,7 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTOUIC ON)
 
 set(CMAKE_INCLUDE_CURRENT_DIR ON)
-set(CMAKE_BUILD_TYPE "RelWithDebInfo")
+# set(CMAKE_BUILD_TYPE "RelWithDebInfo")
 
 add_executable(${PROJECT_NAME} ${srcs} ${module} ${ui})
 
@@ -37,7 +37,18 @@ target_include_directories(${PROJECT_NAME} PRIVATE ${CMAKE_SOURCE_DIR}/3rd/inclu
 target_include_directories(${PROJECT_NAME} PRIVATE ${CMAKE_SOURCE_DIR}/3rd/include)
 # target_include_directories(${PROJECT_NAME} PRIVATE ${CMAKE_SOURCE_DIR}/include/rtc/third_party/abseil-cpp)
 
-target_link_libraries(${PROJECT_NAME} PRIVATE webrtc stdc++ pthread dl 
+#查看是debug还是release
+
+
+if("Debug" STREQUAL "${CMAKE_BUILD_TYPE}")
+    message(STATUS "Debug mode: Adding debug libraries")
+    target_link_libraries(${PROJECT_NAME} PRIVATE webrtc_d)
+else()
+    message(STATUS "Release mode: Adding release libraries")
+    target_link_libraries(${PROJECT_NAME} PRIVATE webrtc)
+endif()
+
+target_link_libraries(${PROJECT_NAME} PRIVATE stdc++ pthread dl 
 X11 
 Xfixes
 Xdamage
