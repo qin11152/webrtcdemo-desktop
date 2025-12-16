@@ -66,7 +66,7 @@ int main(int argc, char *argv[])
 #endif
 
   webrtc::LogMessage::SetLogToStderr(true);
-  webrtc::LogMessage::LogToDebug(webrtc::LS_INFO); // 或者 rtc::LS_INFO
+  // webrtc::LogMessage::LogToDebug(webrtc::LS_INFO); // 或者 rtc::LS_INFO
   std::cout << "[webrtc-smoke] Start" << std::endl;
 
   if (!webrtc::InitializeSSL())
@@ -85,28 +85,28 @@ int main(int argc, char *argv[])
   widg window;
   window.show();
 
-  WebRTCPushClient rtcClient;
+  // WebRTCPushClient rtcClient;
 
-  // 1. 初始化 WebRTC
-  std::vector<IceServerConfig> iceServers = {
-      {"stun:stun.l.google.com:19302", "", ""}};
-  if (!rtcClient.Init(iceServers))
-  {
-    std::cerr << "WebRTC Init failed" << std::endl;
-    return -1;
-  }
+  // // 1. 初始化 WebRTC
+  // std::vector<IceServerConfig> iceServers = {
+  //     {"stun:stun.l.google.com:19302", "", ""}};
+  // if (!rtcClient.Init(iceServers))
+  // {
+  //   std::cerr << "WebRTC Init failed" << std::endl;
+  //   return -1;
+  // }
 
-  // 2. 添加视频源
-  if (!rtcClient.AddDesktopVideo(30, 2000000))
-  {
-    std::cerr << "Add Video failed" << std::endl;
-    return -1;
-  }
+  // // 2. 添加视频源
+  // if (!rtcClient.AddDesktopVideo(30, 2000000))
+  // {
+  //   std::cerr << "Add Video failed" << std::endl;
+  //   return -1;
+  // }
 
   // 3. 创建信令客户端并连接
   // 假设你的信令服务器地址是 ws://localhost:8000
-  SignalingClient sigClient(&rtcClient);
-  sigClient.connectToServer("ws://localhost:8000");
+  // SignalingClient sigClient;
+  // sigClient.connectToServer("ws://localhost:8000/server");
 
 #if 0
   std::thread tmp([]()

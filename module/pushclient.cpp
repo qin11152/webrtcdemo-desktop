@@ -27,6 +27,9 @@
 #include "api/video_codecs/video_encoder_factory_template_libvpx_vp9_adapter.h"
 #include "api/video_codecs/video_encoder_factory_template_open_h264_adapter.h"
 #include "rtc_base/time_utils.h"
+#include "api/stats/rtc_stats.h"
+#include "api/stats/rtc_stats_collector_callback.h"
+#include "api/stats/rtcstats_objects.h"
 
 // 简化版 Observer 实现：CreateSessionDescriptionObserver/SetSessionDescriptionObserver
 namespace webrtc
@@ -66,10 +69,27 @@ webrtc::scoped_refptr<CapturerTrackSource> CapturerTrackSource::Create(int targe
         RTC_LOG(LS_ERROR) << "Failed to create screen capturer";
         return nullptr;
     }
-    src->running_ = true;
-    src->cap_thread_ = std::thread([src, target_fps, capture_cursor]()
-                                   { src->StartCaptureLoop(target_fps, capture_cursor); });
+
+    auto list = webrtc::DesktopCapturer::SourceList{};
+    src->capturer_->GetSourceList(&list);
+    if (!list.empty())
+    {
+        src->capturer_->SelectSource(list[0].id);
+    }
+
     return src;
+}
+
+CapturerTrackSource::CapturerTrackSource()
+    : webrtc::VideoTrackSource(/*remote*/ false), running_(false)
+{
+}
+
+void CapturerTrackSource::Start()
+{
+    running_ = true;
+    cap_thread_ = std::thread([this]()
+                              { StartCaptureLoop(25, true); });
 }
 
 void CapturerTrackSource::StartCaptureLoop(int target_fps, bool capture_cursor)
@@ -185,7 +205,7 @@ void DesktopCapturerSource::OnCaptureResult(webrtc::DesktopCapturer::Result resu
     if (result == webrtc::DesktopCapturer::Result::SUCCESS && frame)
     {
         // 将 DesktopFrame 转换为 VideoFrame 并传递给基类
-        printf("received frame: %dx%d\n", frame->size().width(), frame->size().height());
+        // printf("received frame: %dx%d\n", frame->size().width(), frame->size().height());
     }
 }
 
@@ -202,7 +222,8 @@ void DesktopCapturerSource::CaptureLoop()
     }
 }
 
-WebRTCPushClient::WebRTCPushClient()
+WebRTCPushClient::WebRTCPushClient(std::string id)
+    : id{id}
 {
     webrtc::InitializeSSL();
     signaling_thread_ = webrtc::Thread::CreateWithSocketServer();
@@ -211,6 +232,7 @@ WebRTCPushClient::WebRTCPushClient()
 
 WebRTCPushClient::~WebRTCPushClient()
 {
+    StopRtpSendStatsPolling();
     pc_ = nullptr;
     factory_ = nullptr;
     signaling_thread_->Stop();
@@ -243,11 +265,28 @@ bool WebRTCPushClient::Init(const std::vector<IceServerConfig> &ice_servers)
 
     webrtc::PeerConnectionInterface::RTCConfiguration config;
     config.sdp_semantics = webrtc::SdpSemantics::kUnifiedPlan;
-    webrtc::PeerConnectionInterface::IceServer server;
-    server.uri = ice_servers[0].uri;
-    config.servers.push_back(server);
+    // webrtc::PeerConnectionInterface::IceServer server;
+    // server.uri = ice_servers[0].uri;
+    // config.servers.push_back(server);
 
-    observer_ = std::make_unique<PeerObserver>(&signaling);
+    // 1) 配置 ICE 服务器（STUN/TURN）
+    webrtc::PeerConnectionInterface::IceServer stun;
+    stun.urls = {"stun:stun.l.google.com:19302"};
+    config.servers.push_back(stun);
+
+    // 2) 候选过滤与传输类型
+    // 仅收集/使用某些类型的候选（可选）：
+    config.type = webrtc::PeerConnectionInterface::IceTransportsType::kAll;
+    // 可改为 kRelay（只走 TURN），kNone（禁用）等
+
+    // 3) 持续收集策略（如果你想水位更稳定，或长期收集）：
+    config.continual_gathering_policy =
+        webrtc::PeerConnectionInterface::ContinualGatheringPolicy::GATHER_CONTINUALLY;
+
+    // 4) 网络相关（根据需要开启/关闭 IPv6、网关选择等）
+    config.disable_ipv6_on_wifi = false;
+
+    observer_ = std::make_unique<PeerObserver>(&signaling, this);
 
     webrtc::PeerConnectionDependencies pc_dependencies(observer_.get());
     auto error_or_peer_connection =
@@ -258,18 +297,28 @@ bool WebRTCPushClient::Init(const std::vector<IceServerConfig> &ice_servers)
         pc_ = std::move(error_or_peer_connection.value());
     }
 
+    AddDesktopVideo(30, 2000000);
+
+    CreateAndSendOffer();
+
     return true;
 }
 
 bool WebRTCPushClient::AddDesktopVideo(int fps, int max_bitrate_bps)
 {
-    auto source = DesktopCapturerSource::Create(fps);
+    auto source = CapturerTrackSource::Create(fps);
     if (!source)
+    {
+        printf("Failed to create DesktopCapturerSource\n");
         return false;
+    }
 
     video_track_ = factory_->CreateVideoTrack(source, "desktop");
     if (!video_track_)
+    {
+        printf("Failed to create VideoTrack\n");
         return false;
+    }
 
     webrtc::RtpTransceiverInit init;
     init.direction = webrtc::RtpTransceiverDirection::kSendOnly;
@@ -277,6 +326,7 @@ bool WebRTCPushClient::AddDesktopVideo(int fps, int max_bitrate_bps)
     if (!transceiver_or.ok())
     {
         RTC_LOG(LS_ERROR) << "AddTransceiver failed: " << transceiver_or.error().message();
+        printf("AddTransceiver failed\n");
         return false;
     }
     auto transceiver = transceiver_or.value();
@@ -292,6 +342,8 @@ bool WebRTCPushClient::AddDesktopVideo(int fps, int max_bitrate_bps)
             video_sender_->SetParameters(params);
         }
     }
+
+    source->Start();
     return true;
 }
 
@@ -313,7 +365,7 @@ bool WebRTCPushClient::CreateAndSendOffer(bool ice_restart)
                 std::string sdp;
                 desc->ToString(&sdp);
                 if (signaling.onLocalSdp)
-                    signaling.onLocalSdp({"offer", sdp});
+                    signaling.onLocalSdp({"offer", sdp}, id);
                 RTC_LOG(LS_INFO) << "Local Offer:\n"
                                  << sdp;
             },
@@ -327,6 +379,8 @@ bool WebRTCPushClient::CreateAndSendOffer(bool ice_restart)
 
 bool WebRTCPushClient::SetRemoteAnswer(const std::string &sdp_answer)
 {
+    printf("%s\n", sdp_answer.c_str());
+    return false;
     auto desc = webrtc::CreateSessionDescription(webrtc::SdpType::kAnswer, sdp_answer);
     if (!desc)
     {
@@ -363,4 +417,128 @@ bool WebRTCPushClient::SetMaxBitrate(int bps)
         params.encodings.push_back(webrtc::RtpEncodingParameters());
     params.encodings[0].max_bitrate_bps = bps;
     return video_sender_->SetParameters(params).ok();
+}
+
+void WebRTCPushClient::StartRtpSendStatsPolling(int interval_ms)
+{
+    if (stats_polling_.exchange(true))
+    {
+        return; // already running
+    }
+
+    is_sending_rtp_video_.store(false);
+    last_video_bytes_sent_.store(0);
+    last_video_packets_sent_.store(0);
+
+    stats_thread_ = std::make_unique<std::thread>([this, interval_ms]()
+                                                  {
+        const int sleep_ms = std::max(100, interval_ms);
+        while (stats_polling_.load())
+        {
+            PollRtpSendStatsOnce();
+            std::this_thread::sleep_for(std::chrono::milliseconds(sleep_ms));
+        } });
+}
+
+void WebRTCPushClient::StopRtpSendStatsPolling()
+{
+    stats_polling_.store(false);
+    if (stats_thread_ && stats_thread_->joinable())
+    {
+        stats_thread_->join();
+    }
+    stats_thread_.reset();
+}
+
+void WebRTCPushClient::PollRtpSendStatsOnce()
+{
+    if (!pc_)
+        return;
+
+    // 未连接时没必要判定 RTP
+    if (pc_->peer_connection_state() != webrtc::PeerConnectionInterface::PeerConnectionState::kConnected)
+    {
+        is_sending_rtp_video_.store(false);
+        return;
+    }
+
+    class StatsCallback final : public webrtc::RTCStatsCollectorCallback {
+    public:
+        explicit StatsCallback(WebRTCPushClient *owner) : owner_(owner) {}
+
+        void OnStatsDelivered(const webrtc::scoped_refptr<const webrtc::RTCStatsReport> &report) override
+        {
+            if (!owner_)
+                return;
+
+            uint64_t best_bytes_sent = 0;
+            uint64_t best_packets_sent = 0;
+            bool found_video_outbound = false;
+
+            // 强类型遍历 outbound-rtp
+            for (const webrtc::RTCOutboundRtpStreamStats *s : report->GetStatsOfType<webrtc::RTCOutboundRtpStreamStats>())
+            {
+                if (!s || !s->kind || *s->kind != "video")
+                    continue;
+                if (!s->bytes_sent)
+                    continue;
+
+                found_video_outbound = true;
+                if (*s->bytes_sent >= best_bytes_sent)
+                {
+                    best_bytes_sent = *s->bytes_sent;
+                    if (s->packets_sent)
+                        best_packets_sent = *s->packets_sent;
+                }
+            }
+
+            if (!found_video_outbound)
+            {
+                owner_->is_sending_rtp_video_.store(false);
+                RTC_LOG(LS_INFO) << "[RTP-STATS] outbound-rtp(video) not found";
+                return;
+            }
+
+            uint64_t last_bytes = owner_->last_video_bytes_sent_.exchange(best_bytes_sent);
+            uint64_t last_packets = owner_->last_video_packets_sent_.exchange(best_packets_sent);
+
+            const bool sending = (best_bytes_sent > last_bytes);
+            owner_->is_sending_rtp_video_.store(sending);
+
+            RTC_LOG(LS_INFO) << "[RTP-STATS] video outbound bytesSent=" << best_bytes_sent
+                             << " (delta=" << (best_bytes_sent - last_bytes) << ")"
+                             << " packetsSent=" << best_packets_sent
+                             << " (delta=" << (best_packets_sent - last_packets) << ")"
+                             << " sending=" << (sending ? "YES" : "NO");
+        }
+
+        void AddRef() const override {}
+        webrtc::RefCountReleaseStatus Release() const override
+        {
+            delete this;
+            return webrtc::RefCountReleaseStatus::kDroppedLastRef;
+        }
+
+    private:
+        WebRTCPushClient *owner_;
+    };
+
+    pc_->GetStats(new StatsCallback(this));
+}
+
+void PeerObserver::OnConnectionChange(webrtc::PeerConnectionInterface::PeerConnectionState new_state)
+{
+    RTC_LOG(LS_INFO) << "PeerConnection state: " << new_state;
+    if (!owner_)
+        return;
+    if (new_state == webrtc::PeerConnectionInterface::PeerConnectionState::kConnected)
+    {
+        owner_->StartRtpSendStatsPolling(1000);
+    }
+    else if (new_state == webrtc::PeerConnectionInterface::PeerConnectionState::kDisconnected ||
+             new_state == webrtc::PeerConnectionInterface::PeerConnectionState::kFailed ||
+             new_state == webrtc::PeerConnectionInterface::PeerConnectionState::kClosed)
+    {
+        owner_->StopRtpSendStatsPolling();
+    }
 }

@@ -8,13 +8,15 @@
 #include <QJsonArray>
 #include <QUrl>
 #include <string>
+#include <unordered_map>
+#include <memory>
 #include "pushclient.h"
 
 class SignalingClient : public QObject {
     Q_OBJECT
 public:
     // 传入 WebRTC 客户端指针以便相互调用
-    explicit SignalingClient(WebRTCPushClient* rtc_client, QObject* parent = nullptr);
+    explicit SignalingClient(QObject* parent = nullptr);
     ~SignalingClient() = default;
     // 连接信令服务器
     void connectToServer(const QString& url);
@@ -26,11 +28,13 @@ private slots:
 
 private:
     // 绑定到 WebRTCPushClient 的回调
-    void setupCallbacks();
+    void setupCallbacks(std::shared_ptr<WebRTCPushClient> rtcClient);
     
     // 发送 JSON 辅助函数
     void sendJson(const QJsonObject& json);
 
     QWebSocket m_webSocket;
-    WebRTCPushClient* m_rtcClient;
+    // WebRTCPushClient* m_rtcClient;
+
+    std::unordered_map<std::string, std::shared_ptr<WebRTCPushClient>> clients{};
 };

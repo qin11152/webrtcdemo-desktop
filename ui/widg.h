@@ -2,7 +2,8 @@
 #define WIDG_H
 
 #include <QWidget>
-#include "module/SimplePeer.h"
+
+#include "module/signaling_client.h"
 
 namespace Ui
 {
@@ -19,7 +20,7 @@ public:
 
 private:
     Ui::widg *ui;
-    SimplePeer* simplePeer;
+    SignalingClient* m_ptrSignalingClient{nullptr};
 };
 
 #endif // WIDG_H

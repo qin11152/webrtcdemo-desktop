@@ -27,6 +27,9 @@
 #include "modules/desktop_capture/screen_capturer_helper.h"
 #include "absl/types/optional.h"
 #include "media/base/video_broadcaster.h"
+// getStats
+#include "api/stats/rtc_stats_report.h"
+// 如果需要窗口捕获：#include "modules/desktop_capture/window_capturer.h"
 // 如果需要窗口捕获：#include "modules/desktop_capture/window_capturer.h"
 
 struct IceServerConfig
@@ -46,7 +49,7 @@ class SimpleSignaling
 {
 public:
     // 你可以把这三个回调接到你的 WebSocket/HTTP 信令
-    std::function<void(const SdpBundle &)> onLocalSdp;
+    std::function<void(const SdpBundle &, std::string id)> onLocalSdp;
     std::function<void(const std::string &)> onLocalIce;
 };
 
@@ -99,14 +102,15 @@ public:
     }
 
 public:
-    CapturerTrackSource()
-        : webrtc::VideoTrackSource(/*remote*/ false), running_(false) {}
+    CapturerTrackSource();
 
     void OnCapturedFrame(const webrtc::VideoFrame &frame)
     {
         broadcaster_.OnFrame(frame);
     }
 
+
+    void Start();
 protected:
     // VideoTrackSource 接口
     webrtc::MediaSourceInterface::SourceState state() const override
@@ -134,6 +138,8 @@ private:
     std::thread cap_thread_;
     webrtc::VideoBroadcaster broadcaster_;
 
+    int m_iTargetFps{25};
+
     // 实现 VideoTrackSource 的纯虚函数 source()
 public:
     webrtc::VideoSourceInterface<webrtc::VideoFrame> *source() override
@@ -142,18 +148,18 @@ public:
     }
 };
 
+class WebRTCPushClient;
+
 class PeerObserver : public webrtc::PeerConnectionObserver
 {
 public:
-    explicit PeerObserver(SimpleSignaling *sig) : signaling_(sig) {}
+    PeerObserver(SimpleSignaling *sig, WebRTCPushClient* owner) : signaling_(sig), owner_(owner) {}
     void OnSignalingChange(webrtc::PeerConnectionInterface::SignalingState new_state) override
     {
         RTC_LOG(LS_INFO) << "Signaling state: " << new_state;
     }
-    void OnConnectionChange(webrtc::PeerConnectionInterface::PeerConnectionState new_state) override
-    {
-        RTC_LOG(LS_INFO) << "PeerConnection state: " << new_state;
-    }
+    void OnConnectionChange(webrtc::PeerConnectionInterface::PeerConnectionState new_state) override;
+    
     void OnIceGatheringChange(webrtc::PeerConnectionInterface::IceGatheringState new_state) override
     {
         RTC_LOG(LS_INFO) << "ICE gathering: " << new_state;
@@ -172,18 +178,19 @@ public:
     }
 
     void OnDataChannel(
-      webrtc::scoped_refptr<webrtc::DataChannelInterface> channel) override {}
+        webrtc::scoped_refptr<webrtc::DataChannelInterface> channel) override {}
 
 private:
     SimpleSignaling *signaling_;
+    WebRTCPushClient* owner_;
 };
 
 class WebRTCPushClient
 {
 public:
-    WebRTCPushClient();
+    WebRTCPushClient(std::string id);
     ~WebRTCPushClient();
-
+    std::string getId() const { return id; }
     // 初始化 PeerConnectionFactory 与 PeerConnection
     bool Init(const std::vector<IceServerConfig> &ice_servers);
 
@@ -202,6 +209,11 @@ public:
     // 调整码率（在连接后可动态调用）
     bool SetMaxBitrate(int bps);
 
+    // 诊断：轮询 getStats 判断是否在发送 RTP（outbound-rtp bytesSent 是否增长）
+    void StartRtpSendStatsPolling(int interval_ms = 1000);
+    void StopRtpSendStatsPolling();
+    bool IsSendingRtpVideo() const { return is_sending_rtp_video_.load(); }
+
     SimpleSignaling signaling;
 
 private:
@@ -215,4 +227,13 @@ private:
     std::unique_ptr<webrtc::Thread> network_thread_;
     std::unique_ptr<webrtc::Thread> worker_thread_;
     std::unique_ptr<webrtc::Thread> signaling_thread_;
+    std::string id{""};
+
+    // --- RTP 发送诊断 ---
+    std::atomic<bool> stats_polling_{false};
+    std::unique_ptr<std::thread> stats_thread_;
+    std::atomic<bool> is_sending_rtp_video_{false};
+    std::atomic<uint64_t> last_video_bytes_sent_{0};
+    std::atomic<uint64_t> last_video_packets_sent_{0};
+    void PollRtpSendStatsOnce();
 };

@@ -31,9 +31,9 @@ widg::widg(QWidget *parent)
     // webrtc::Environment env =
     //     webrtc::CreateEnvironment(std::make_unique<webrtc::FieldTrials>(
     //         field_trials_str));
-    simplePeer = new SimplePeer(env, [](const std::string &msg)
-                                { RTC_LOG(LS_INFO) << "Signaling message: " << msg; });
-    simplePeer->Init();
+
+    m_ptrSignalingClient = new SignalingClient(this);
+    m_ptrSignalingClient->connectToServer("ws://localhost:8000/server");
 }
 
 widg::~widg()
